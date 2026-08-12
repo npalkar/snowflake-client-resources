@@ -216,20 +216,6 @@ One click to add — appears as a live, always-current table. Test in an afterno
 
 ---
 
-## Cost Model
-
-| Resource | Approximate Cost | Notes |
-|----------|-----------------|-------|
-| Warehouse (Medium) | ~$4/hour | Day-to-day development and scoring |
-| Warehouse (XL) | ~$16/hour | Larger training jobs |
-| Warehouse (4XL) | ~$64/hour | Hyperparameter sweeps — burst and release |
-| Storage | ~$23/TB/month | Compressed, auto-managed |
-| Tasks | Per-second billing | Only when executing |
-
-**Key principle:** Pay only when compute is running. Auto-suspend eliminates idle costs.
-
----
-
 ## Getting Started
 
 1. **Migrate data to Snowflake** (in progress)
