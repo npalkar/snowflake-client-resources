@@ -205,14 +205,13 @@ Build web applications hosted in Snowflake for non-technical stakeholders. No se
 
 ## Snowflake Marketplace — Data Enrichment
 
-Access third-party data instantly to improve model performance:
+Snowflake Marketplace hosts thousands of data products from third-party providers. Depending on your use case, you may find relevant datasets that can enrich your models — for example:
 
-- **Experian** — Premier Attributes, ClearView, vendor scores
-- **Equifax** — Commercial credit data
-- **TransUnion** — Consumer attributes
-- **Alternative data** — Employment verification, bank transaction summaries, macroeconomic indicators
+- Credit bureau attributes and scores
+- Commercial and consumer credit data
+- Alternative data (employment, bank transactions, macroeconomic indicators)
 
-One click to add — appears as a live, always-current table. Test in an afternoon, buy if it works.
+Worth exploring to see what's available for your specific needs. When a relevant dataset exists, it appears as a live table in your account — no file transfers, no integration projects.
 
 ---
 
