@@ -6,7 +6,7 @@ A collection of guides, demos, and reference materials for Snowflake capabilitie
 
 | Resource | Description |
 |----------|-------------|
-| [credit-risk-ml](credit-risk-ml/) | End-to-end machine learning on Snowflake — credit default prediction model with training, model registry, SQL inference, automated scoring, and a Streamlit decisioning app |
+| [credit-risk-ml](credit-risk-ml/) | End-to-end machine learning on Snowflake — credit default prediction model with training, model registry, SQL inference, automated scoring, and a Streamlit decisioning app. Includes a [follow-up guide](credit-risk-ml/follow-up-questions.md) on Git integration, model monitoring metrics, Python scheduling, and preprocessing pipelines |
 
 ---
 

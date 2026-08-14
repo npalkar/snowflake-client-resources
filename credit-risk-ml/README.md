@@ -226,6 +226,20 @@ Worth exploring to see what's available for your specific needs. When a relevant
 
 ---
 
+## Additional Topics
+
+[**Follow-Up: Open Questions**](follow-up-questions.md) — detailed answers on:
+
+- Connecting Snowflake to GitHub (commit and push from Notebooks and Workspaces)
+- Built-in model monitoring metrics (PSI/CSI, ROC AUC, precision, recall, F1)
+- Scheduling multi-step Python scripts and task graphs
+- Handling late upstream data with triggered tasks
+- Registering preprocessing pipelines alongside models
+- Version control approach (Git for code, Registry for models)
+- Ad-hoc ingestion of large CSV files
+
+---
+
 ## Resources
 
 - [Snowflake ML Documentation](https://docs.snowflake.com/en/developer-guide/snowflake-ml/overview)
