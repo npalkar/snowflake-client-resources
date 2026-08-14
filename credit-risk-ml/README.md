@@ -1,26 +1,38 @@
-# Snowflake ML Quick Start Guide
+![Type](https://img.shields.io/badge/Type-Guide-blue)
+![Deploy](https://img.shields.io/badge/Deploy-None-lightgrey)
+![Review](https://img.shields.io/badge/Review-2026--12--31-orange)
+![Status](https://img.shields.io/badge/Status-Active-success)
 
-A practical guide to building, deploying, and managing machine learning models entirely within Snowflake — from feature engineering through training, production inference, and monitoring, with full governance.
+# Machine Learning on Snowflake: One Platform, End to End
 
-## Contents
+Most ML teams stitch together a database, a compute environment, an experiment tracker, a model store, a scheduler, and a monitoring vendor. This guide shows the same lifecycle running entirely inside Snowflake — same Python, same libraries, without the plumbing between them.
 
-1. [Why Snowflake for ML](#why-snowflake-for-ml)
-2. [Architecture Overview](#architecture-overview)
-3. [Snowflake Notebooks — Python-Native Training](#1-snowflake-notebooks--python-native-training)
-4. [Feature Store — Managed Feature Pipelines](#2-feature-store--managed-feature-pipelines)
-5. [Experiment Tracking](#3-experiment-tracking--compare-and-reproduce)
-6. [Model Registry](#4-model-registry--governed-versioned-callable)
-7. [Preprocessing Pipelines in the Registry](#5-preprocessing-pipelines-in-the-registry)
-8. [SQL Inference](#6-sql-inference--anyone-can-call-the-model)
-9. [Scheduled Tasks & Python Orchestration](#7-scheduled-tasks--python-orchestration)
-10. [Handling Upstream Data Dependencies](#8-handling-upstream-data-dependencies)
-11. [Model Monitoring](#9-model-monitoring--built-in-metrics)
-12. [Streamlit Applications](#10-streamlit--end-user-applications)
-13. [Connecting to GitHub](#11-connecting-snowflake-to-github)
-14. [Version Control Strategy](#12-version-control-strategy)
-15. [Loading Data](#13-loading-data)
-16. [Snowflake Marketplace](#snowflake-marketplace--data-enrichment)
-17. [Getting Started](#getting-started)
+> **Just want to train and register a model?** Jump to [Notebooks](#1-snowflake-notebooks--python-native-training) and [Model Registry](#4-model-registry--governed-versioned-callable). The rest fills in around it.
+
+**Audience:** Data scientists and ML engineers moving workloads onto Snowflake
+**Companion code:** [`credit_default_model.ipynb`](credit_default_model.ipynb) · [`demo_inference_and_tasks.sql`](demo_inference_and_tasks.sql) · [`streamlit_app.py`](streamlit_app.py)
+
+> **Reference only — no support provided.** Validate against the linked documentation before production use. Snowflake ML features move quickly; a few noted below are in preview and may change.
+
+---
+
+## Start Here: What Are You Trying to Do?
+
+| If you want to... | Go to |
+|---|---|
+| Train a model on Snowflake compute instead of a VM | [1. Notebooks](#1-snowflake-notebooks--python-native-training) |
+| Stop duplicating feature logic between training and scoring | [2. Feature Store](#2-feature-store--managed-feature-pipelines) |
+| Compare many experiments without losing track of them | [3. Experiment Tracking](#3-experiment-tracking--compare-and-reproduce) |
+| Version models and stop managing conda environments | [4. Model Registry](#4-model-registry--governed-versioned-callable) |
+| Ship preprocessing along with the model | [5. Preprocessing Pipelines](#5-preprocessing-pipelines-in-the-registry) |
+| Let analysts and BI tools call the model | [6. SQL Inference](#6-sql-inference--anyone-can-call-the-model) |
+| Replace manual monthly/weekly scoring runs | [7. Tasks & Orchestration](#7-scheduled-tasks--python-orchestration) |
+| Handle upstream data that arrives late | [8. Data Dependencies](#8-handling-upstream-data-dependencies) |
+| Track drift and performance without a monitoring vendor | [9. Model Monitoring](#9-model-monitoring--built-in-metrics) |
+| Give non-technical stakeholders a UI | [10. Streamlit](#10-streamlit--end-user-applications) |
+| Connect Snowflake to your Git repo | [11. GitHub](#11-connecting-snowflake-to-github) |
+
+Sections run in workflow order, so reading top to bottom also works.
 
 ---
 
@@ -41,29 +53,29 @@ A practical guide to building, deploying, and managing machine learning models e
 
 ## Architecture Overview
 
-```
-┌────────────────────────────────────────────────────────────────────┐
-│                       SNOWFLAKE PLATFORM                            │
-│                                                                     │
-│  ┌──────────┐   ┌───────────────┐   ┌───────────┐   ┌────────────┐ │
-│  │   DATA   │──▶│ FEATURE STORE │──▶│ NOTEBOOK  │──▶│   MODEL    │ │
-│  │ (Tables) │   │ (Feature Views)│   │ (Training)│   │  REGISTRY  │ │
-│  └──────────┘   └───────┬───────┘   └───────────┘   └──────┬─────┘ │
-│                         │                                   │       │
-│                         │        ┌───────────────┐          │       │
-│                         └───────▶│ TASK          │◀─────────┘       │
-│                                  │ (scheduled or │                  │
-│                                  │  triggered)   │                  │
-│                                  └───────┬───────┘                  │
-│                                          ▼                          │
-│  ┌──────────────┐   ┌──────────────┐   ┌─────────────────────────┐ │
-│  │  STREAMLIT   │   │  SQL /       │   │  MODEL MONITOR          │ │
-│  │  (End-User)  │   │  PowerBI     │   │  (Drift / Performance)  │ │
-│  └──────────────┘   └──────────────┘   └─────────────────────────┘ │
-└────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Data[("Data Tables")] --> FS["Feature Store"]
+    FS --> NB["Notebook Training"]
+    NB --> Exp["Experiment Tracking"]
+    Exp --> Reg["Model Registry"]
+
+    Reg --> Task["Task: scheduled or triggered"]
+    FS --> Task
+
+    Task --> Scored[("Scored Results")]
+
+    Scored --> SQL["SQL / PowerBI"]
+    Scored --> ST["Streamlit App"]
+    Scored --> Mon["Model Monitor"]
+
+    Mon -.->|"retrain signal"| NB
 ```
 
+Everything in that diagram is a Snowflake object governed by the same RBAC — no external services, no data egress.
+
 ---
+
 
 ## 1. Snowflake Notebooks — Python-Native Training
 
@@ -860,26 +872,35 @@ Worth exploring to see what's available for your specific needs. When a relevant
 
 ---
 
-## Getting Started
+## Putting It Together
 
-1. **Migrate data to Snowflake** (in progress)
-2. **Define features in the Feature Store** — entities, feature views, managed refresh
-3. **Generate a point-in-time-correct training set** — `generate_training_set` with `spine_timestamp_col`
-4. **Train in a notebook** — same Python, elastic compute, experiment tracking
-5. **Register the model** — one `log_model()` call
-6. **Call via SQL** — `MODEL!PREDICT_PROBA(...)` from anywhere
-7. **Automate scoring** — `CREATE TASK`, scheduled or triggered on data arrival
-8. **Monitor** — `CREATE MODEL MONITOR` with a baseline set at creation
+A typical build order:
+
+1. **Define features in the Feature Store** — entities, feature views, managed refresh
+2. **Generate a point-in-time-correct training set** — `generate_training_set` with `spine_timestamp_col`
+3. **Train in a notebook** — same Python, elastic compute, experiment tracking
+4. **Register the model** — one `log_model()` call
+5. **Call via SQL** — `MODEL!PREDICT_PROBA(...)` from anywhere
+6. **Automate scoring** — `CREATE TASK`, scheduled or triggered on data arrival
+7. **Monitor** — `CREATE MODEL MONITOR`, with the baseline set at creation
+
+The three decisions worth making before you build, because they're expensive to change later:
+
+| Decision | Why it matters |
+|---|---|
+| Set a **monitor baseline** at creation | Adding one later requires dropping and recreating the monitor |
+| Use `spine_timestamp_col` on training sets | Without it you leak future feature values into training and the model overstates its performance |
+| Pass a **Snowpark** DataFrame as `sample_input_data` | pandas works, but only Snowpark captures data lineage |
 
 ---
 
-## Resources
+## External References
 
-- [Snowflake ML Documentation](https://docs.snowflake.com/en/developer-guide/snowflake-ml/overview)
-- [Feature Store](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/overview)
-- [Model Registry](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/overview)
-- [ML Observability](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/model-observability)
+- [Snowflake ML overview](https://docs.snowflake.com/en/developer-guide/snowflake-ml/overview)
+- [Feature Store](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/overview) · [Advanced feature engineering](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/advanced-feature-engineering) · [Training and inference](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/modeling)
+- [Model Registry](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/overview) · [Pre/post-processing with models](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/custom-processing-with-models)
+- [ML Observability](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/model-observability) · [Model monitor functions](https://docs.snowflake.com/en/sql-reference/functions-model-monitors)
 - [Snowflake Notebooks](https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks)
 - [Git integration](https://docs.snowflake.com/en/developer-guide/git/git-overview)
-- [Triggered tasks](https://docs.snowflake.com/en/user-guide/tasks-triggered)
+- [Triggered tasks](https://docs.snowflake.com/en/user-guide/tasks-triggered) · [Tasks overview](https://docs.snowflake.com/en/user-guide/tasks-intro)
 - [Snowflake Marketplace](https://app.snowflake.com/marketplace)
