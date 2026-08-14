@@ -40,7 +40,7 @@ Sections run in workflow order, so reading top to bottom also works.
 
 | Traditional (On-Prem VMs) | Snowflake |
 |---------------------------|-----------|
-| Fixed compute — limited hyperparameter tuning | Elastic warehouses scale in seconds, back to zero when idle |
+| Fixed compute — limited hyperparameter tuning | Resize the warehouse per workload; scaling takes effect on the next query |
 | Data exports from SQL Server to Python environments | Data and training in one platform — no movement |
 | Feature logic duplicated between training and scoring scripts | Feature Store defines features once, serves both paths |
 | Pickle files on shared drives, no versioning | Model Registry with versioning, lineage, and access controls |
@@ -92,19 +92,22 @@ model = XGBClassifier(n_estimators=200, max_depth=5)
 model.fit(X_train, y_train)
 ```
 
-**Compute flexibility:**
+**Sizing compute:**
 
-- Medium warehouse (4 cores) for development
-- 4XL warehouse (128 cores) for hyperparameter tuning — resizes in seconds
-- Compute Pools for GPU workloads (deep learning, distributed training)
-- Pay-per-second — auto-suspends when idle
+Start on the smallest warehouse that works and size up only when you hit a real limit — a job that runs too long, or one that spills to disk. Resizing takes effect on the next query, so there's no penalty for guessing low first.
 
 ```sql
--- Scale up for a tuning sweep, scale back down when done
-ALTER WAREHOUSE COMPUTE_WH SET WAREHOUSE_SIZE = '4X-LARGE';
+-- Size up for a tuning sweep, back down when it's finished
+ALTER WAREHOUSE COMPUTE_WH SET WAREHOUSE_SIZE = 'LARGE';
 -- ... run experiments ...
-ALTER WAREHOUSE COMPUTE_WH SET WAREHOUSE_SIZE = 'MEDIUM';
+ALTER WAREHOUSE COMPUTE_WH SET WAREHOUSE_SIZE = 'X-SMALL';
 ```
+
+Each size step doubles both the compute and the cost per second. A job that finishes twice as fast on the next size up costs about the same — so scaling up is often free in practice, and only wasteful when the workload can't use the extra capacity.
+
+- **Warehouses** cover most ML work: data prep, training, batch scoring
+- **Compute Pools** for GPU workloads (deep learning, distributed training)
+- **Pay-per-second** with auto-suspend, so an idle warehouse costs nothing
 
 ---
 
