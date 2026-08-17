@@ -21,16 +21,15 @@ Most ML teams stitch together a database, a compute environment, an experiment t
 | If you want to... | Go to |
 |---|---|
 | Train a model on Snowflake compute instead of a VM | [1. Notebooks](#1-snowflake-notebooks--python-native-training) |
-| Stop duplicating feature logic between training and scoring | [2. Feature Store](#2-feature-store--managed-feature-pipelines) |
-| Compare many experiments without losing track of them | [3. Experiment Tracking](#3-experiment-tracking--compare-and-reproduce) |
-| Version models and stop managing conda environments | [4. Model Registry](#4-model-registry--governed-versioned-callable) |
-| Ship preprocessing along with the model | [5. Preprocessing Pipelines](#5-preprocessing-pipelines-in-the-registry) |
-| Let analysts and BI tools call the model | [6. SQL Inference](#6-sql-inference--anyone-can-call-the-model) |
-| Replace manual monthly/weekly scoring runs | [7. Tasks & Orchestration](#7-scheduled-tasks--python-orchestration) |
-| Handle upstream data that arrives late | [8. Data Dependencies](#8-handling-upstream-data-dependencies) |
-| Track drift and performance without a monitoring vendor | [9. Model Monitoring](#9-model-monitoring--built-in-metrics) |
-| Give non-technical stakeholders a UI | [10. Streamlit](#10-streamlit--end-user-applications) |
-| Connect Snowflake to your Git repo | [11. GitHub](#11-connecting-snowflake-to-github) |
+| Compare many experiments without losing track of them | [2. Experiment Tracking](#2-experiment-tracking--compare-and-reproduce) |
+| Version models and stop managing conda environments | [3. Model Registry](#3-model-registry--governed-versioned-callable) |
+| Ship preprocessing along with the model | [4. Preprocessing Pipelines](#4-preprocessing-pipelines-in-the-registry) |
+| Let analysts and BI tools call the model | [5. SQL Inference](#5-sql-inference--anyone-can-call-the-model) |
+| **Schedule an existing multi-step Python script** | [6. Tasks & Orchestration](#6-scheduled-tasks--python-orchestration) |
+| Handle upstream data that arrives late | [7. Data Dependencies](#7-handling-upstream-data-dependencies) |
+| Track drift and performance without a monitoring vendor | [8. Model Monitoring](#8-model-monitoring--built-in-metrics) |
+| Give non-technical stakeholders a UI | [9. Streamlit](#9-streamlit--end-user-applications) |
+| Connect Snowflake to your Git repo | [10. GitHub](#10-connecting-snowflake-to-github) |
 
 Sections run in workflow order, so reading top to bottom also works.
 
@@ -42,7 +41,7 @@ Sections run in workflow order, so reading top to bottom also works.
 |---------------------------|-----------|
 | Fixed compute — limited hyperparameter tuning | Resize the warehouse per workload; scaling takes effect on the next query |
 | Data exports from SQL Server to Python environments | Data and training in one platform — no movement |
-| Feature logic duplicated between training and scoring scripts | Feature Store defines features once, serves both paths |
+| Feature logic duplicated between training and scoring scripts | Register preprocessing with the model so both paths use one definition |
 | Pickle files on shared drives, no versioning | Model Registry with versioning, lineage, and access controls |
 | YAML files and conda envs for dependency management | Each model version is fully isolated with its own dependencies |
 | Manual monthly/weekly scoring | Scheduled and event-triggered Tasks run automatically |
@@ -55,13 +54,12 @@ Sections run in workflow order, so reading top to bottom also works.
 
 ```mermaid
 flowchart TD
-    Data[("Data Tables")] --> FS["Feature Store"]
-    FS --> NB["Notebook Training"]
+    Data[("Data Tables")] --> NB["Notebook Training"]
     NB --> Exp["Experiment Tracking"]
     Exp --> Reg["Model Registry"]
 
     Reg --> Task["Task: scheduled or triggered"]
-    FS --> Task
+    Data --> Task
 
     Task --> Scored[("Scored Results")]
 
@@ -111,174 +109,7 @@ Each size step doubles both the compute and the cost per second. A job that fini
 
 ---
 
-## 2. Feature Store — Managed Feature Pipelines
-
-The Feature Store is the answer to "how do we manage our feature engineering pipelines?" Rather than maintaining transformation logic in Python scripts that run before training and again before scoring, you define each feature once and Snowflake keeps it fresh and serves it to both paths.
-
-### Core concepts
-
-| Concept | What it is |
-|---------|-----------|
-| **Entity** | The thing features describe, and its join key(s) — e.g. an applicant, keyed by `APPLICANT_ID` |
-| **Feature View** | A set of related features plus the logic that computes them. Backed by a Dynamic Table when managed by Snowflake |
-| **Training Set** | A point-in-time-correct dataset assembled from feature views for model training |
-
-### Defining features
-
-```python
-from snowflake.ml.feature_store import FeatureStore, Entity, FeatureView, CreationMode
-
-fs = FeatureStore(
-    session=session,
-    database="CREDIT_RISK",
-    name="FEATURE_STORE",
-    default_warehouse="COMPUTE_WH",
-    creation_mode=CreationMode.CREATE_IF_NOT_EXIST,
-)
-
-# Define the entity
-applicant = Entity(name="APPLICANT", join_keys=["APPLICANT_ID"])
-fs.register_entity(applicant)
-
-# Define a feature view with your transformation logic
-bureau_features = session.sql("""
-    SELECT
-        APPLICANT_ID,
-        AS_OF_TS,
-        FICO_SCORE,
-        REVOLVING_UTILIZATION_PCT,
-        NUM_DELINQ_30_12M,
-        TOTAL_REVOLVING_BALANCE / NULLIF(TOTAL_CREDIT_LIMIT, 0) AS AGG_UTILIZATION,
-        NUM_DELINQ_60_12M + NUM_DELINQ_90_EVER AS SEVERE_DELINQ_COUNT
-    FROM RAW_BUREAU_PULLS
-""")
-
-fv = FeatureView(
-    name="BUREAU_FEATURES",
-    entities=[applicant],
-    feature_df=bureau_features,
-    timestamp_col="AS_OF_TS",
-    refresh_freq="1 day",        # Snowflake keeps this fresh automatically
-    desc="Experian Premier Attributes and derived ratios",
-)
-
-registered_fv = fs.register_feature_view(fv, version="v1")
-```
-
-Because `refresh_freq` is set, the Feature Store creates and maintains a Dynamic Table behind the scenes. The pipeline runs itself — no task to write, no orchestration to manage.
-
-### Point-in-time correctness
-
-This matters enormously for a credit model with an 18-month performance window. If you train on today's feature values but the label reflects behavior from 18 months ago, you leak future information and the model looks far better in development than it performs in production.
-
-`generate_training_set` solves this with an ASOF join — for each training row it selects the feature values as they existed at that row's timestamp:
-
-```python
-# Spine = the applicants, their application timestamps, and the outcome
-spine_df = session.sql("""
-    SELECT APPLICANT_ID, APPLICATION_TS, DEFAULT_18M
-    FROM HISTORICAL_APPLICATIONS
-""")
-
-training_set = fs.generate_training_set(
-    spine_df=spine_df,
-    features=[registered_fv],
-    spine_timestamp_col="APPLICATION_TS",   # features as of application time
-    spine_label_cols=["DEFAULT_18M"],
-)
-
-training_df = training_set.to_pandas()
-```
-
-For each applicant, this retrieves their bureau attributes as of the day they applied — not today's values. No manual window logic, no risk of leakage.
-
-### Training and serving from the same definition
-
-The same feature view feeds inference, which eliminates train/serve skew:
-
-```python
-prediction_df = fs.retrieve_feature_values(
-    spine_df=new_applications_df,
-    features=[registered_fv],
-    spine_timestamp_col="APPLICATION_TS",
-)
-```
-
-The features the model sees in production are computed by exactly the same logic that produced its training data.
-
-### Why this matters for a multi-model team
-
-| Without Feature Store | With Feature Store |
-|----------------------|-------------------|
-| Feature logic duplicated in training and scoring scripts — they drift apart | One definition serves both |
-| Each model re-derives the same features from raw data | Define `SEVERE_DELINQ_COUNT` once; credit, fraud, and collections models all reuse it |
-| Point-in-time correctness handled manually with window functions | ASOF join handled by `generate_training_set` |
-| No catalog — "does someone already compute utilization?" | Discoverable registry of entities and feature views |
-| Feature pipelines are hand-written tasks | Managed Dynamic Tables with a declared refresh frequency |
-
-### Feature patterns available
-
-| Pattern | Use when |
-|---------|----------|
-| **External** | Features already computed and maintained outside the Feature Store (static or slow-changing) |
-| **Managed** | Snowflake computes and refreshes on a schedule — the common case |
-| **Time-windowed** | Trailing aggregates like spend-7d or delinquencies-90d. Uses incremental tiling to keep cost down |
-| **Append-only** | Retains a full history of feature snapshots for deeper point-in-time reconstruction |
-| **Online** | Millisecond lookups for real-time inference (Postgres-backed) |
-| **Rollup** | Aggregate lower-level features to a higher-level entity (card to account, product to category) |
-| **Iceberg** | Features stored as Dynamic Iceberg Tables for cross-engine access |
-
-### Time-windowed aggregations
-
-Instead of writing rolling-window SQL by hand, declare the windows:
-
-```python
-from snowflake.ml.feature_store import Feature
-
-features = [
-    Feature.sum("PAYMENT_AMOUNT", "30d").alias("TOTAL_PAYMENTS_30D"),
-    Feature.count("DELINQUENCY_EVENT", "90d").alias("DELINQ_EVENTS_90D"),
-    Feature.avg("BALANCE", "7d").alias("AVG_BALANCE_7D"),
-    # offset shifts the window back for period-over-period comparisons
-    Feature.sum("PAYMENT_AMOUNT", "30d", offset="30d").alias("TOTAL_PAYMENTS_PRIOR_30D"),
-]
-
-fv = FeatureView(
-    name="PAYMENT_BEHAVIOR",
-    entities=[applicant],
-    feature_df=session.table("PAYMENT_EVENTS"),
-    timestamp_col="EVENT_TS",
-    feature_granularity="1d",    # tile size
-    refresh_freq="1d",
-    features=features,
-)
-```
-
-Snowflake maintains partial aggregates (tiles) incrementally rather than rescanning raw events, then stitches them at query time. Training sets that include tiled feature views need `join_method="cte"`:
-
-```python
-training_set = fs.generate_training_set(
-    spine_df=spine_df,
-    features=[registered_fv, registered_agg_fv],
-    spine_timestamp_col="APPLICATION_TS",
-    spine_label_cols=["DEFAULT_18M"],
-    join_method="cte",
-)
-```
-
-Requires `snowflake-ml-python` 1.24.0 or later for time-windowed aggregation; `generate_training_set` requires 1.5.4 or later.
-
-### Notes worth knowing up front
-
-- Training sets are ephemeral Snowpark DataFrames by default. Pass `save_as="<table>"` to materialize, or use `generate_dataset` for an immutable, versioned Snowflake Dataset when you need reproducibility guarantees.
-- When reading offline feature views through the Python SDK, set `ALTER SESSION SET TIMEZONE = 'UTC'` first. Offline reads can interpret timestamps using the session timezone, which can produce values that disagree with online reads.
-- If you build feature pipelines as Dynamic Tables outside the Feature Store, you can still register a view-based Feature View on top of them. Don't apply Feature Store object tags to those Dynamic Tables directly.
-
-**Docs:** [Feature Store overview](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/overview) | [Advanced feature engineering](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/advanced-feature-engineering) | [Training and inference](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/modeling)
-
----
-
-## 3. Experiment Tracking — Compare and Reproduce
+## 2. Experiment Tracking — Compare and Reproduce
 
 Record every training run's parameters, metrics, and artifacts. Compare runs side-by-side. No MLflow server to install or maintain.
 
@@ -304,7 +135,7 @@ Autologging callbacks are available for XGBoost, LightGBM, and Keras — metrics
 
 ---
 
-## 4. Model Registry — Governed, Versioned, Callable
+## 3. Model Registry — Governed, Versioned, Callable
 
 Register trained models as first-class Snowflake objects. Each version is isolated with its own dependencies.
 
@@ -339,7 +170,7 @@ Pass a **Snowpark** DataFrame (not pandas) as `sample_input_data` to capture dat
 
 ---
 
-## 5. Preprocessing Pipelines in the Registry
+## 4. Preprocessing Pipelines in the Registry
 
 You can register a preprocessing pipeline together with the model so one call does both transformation and scoring.
 
@@ -420,13 +251,15 @@ To bring helper modules along, use `code_paths=["src/preprocessing_utils"]`.
 
 ### Which to use
 
-For feature engineering that's shared across models or needs to stay fresh, use the **Feature Store**. For row-level transformations that are intrinsic to one model — imputation, scaling, encoding — put them in the **registered pipeline** so they travel with the model.
+Use the **sklearn Pipeline** whenever your preprocessing fits it — it's the simpler path and needs no custom class. Reach for **CustomModel** when you need to chain several models, call a library the registry doesn't support natively, or return multiple output columns.
+
+Either way, packaging preprocessing with the model means the transformation that ran at training time is the same one that runs at scoring time. That's the main reason to do it rather than keeping a separate cleaning script.
 
 **Docs:** [Pre-processing and post-processing with models](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/custom-processing-with-models)
 
 ---
 
-## 6. SQL Inference — Anyone Can Call the Model
+## 5. SQL Inference — Anyone Can Call the Model
 
 Once registered, the model is callable from SQL. No Python required for consumers.
 
@@ -458,9 +291,13 @@ FROM scored;
 
 ---
 
-## 7. Scheduled Tasks & Python Orchestration
+## 6. Scheduled Tasks & Python Orchestration
+
+If you have an existing multi-step Python script — clean, transform, score, log, notify — you don't need to rewrite it as SQL to schedule it in Snowflake. Register the script as a stored procedure and call it from a Task.
 
 ### SQL scoring on a schedule
+
+The simplest case: scoring is a single SQL statement.
 
 ```sql
 CREATE OR REPLACE TASK SCORE_NEW_APPLICATIONS
@@ -550,7 +387,7 @@ DAGOperation(schema).deploy(dag, mode="orreplace")
 
 ---
 
-## 8. Handling Upstream Data Dependencies
+## 7. Handling Upstream Data Dependencies
 
 **The problem:** a monthly table usually updates on the 2nd, but sometimes it's late. A plain scheduled task would run anyway and either fail or — worse — succeed against stale data.
 
@@ -619,7 +456,7 @@ Streams are supported on tables, views, dynamic tables, Iceberg tables, data sha
 
 ---
 
-## 9. Model Monitoring — Built-In Metrics
+## 8. Model Monitoring — Built-In Metrics
 
 Snowflake ML Observability provides native, off-the-shelf metrics. No Python implementation required, and no third-party monitoring vendor.
 
@@ -733,7 +570,7 @@ For credit default, ground truth arrives long after the prediction. The monitor 
 
 ---
 
-## 10. Streamlit — End-User Applications
+## 9. Streamlit — End-User Applications
 
 Build web applications hosted in Snowflake for non-technical stakeholders. No separate infrastructure to provision.
 
@@ -746,7 +583,7 @@ Deploy from a Workspace and the app appears as a standalone Streamlit object —
 
 ---
 
-## 11. Connecting Snowflake to GitHub
+## 10. Connecting Snowflake to GitHub
 
 Snowflake integrates directly with Git repositories. Once connected you can browse branches, fetch the latest code, and **commit and push changes back from Workspaces, Streamlit apps, and Notebooks** — without leaving Snowflake.
 
@@ -803,7 +640,7 @@ For repositories behind a firewall, Snowflake supports outbound private link con
 
 ---
 
-## 12. Version Control Strategy
+## 11. Version Control Strategy
 
 Two complementary layers:
 
@@ -824,7 +661,7 @@ Use both. A model version's lineage tells you what data produced it; your Git hi
 
 ---
 
-## 13. Loading Data
+## 12. Loading Data
 
 For ad-hoc loads of large files, the standard path is stage-then-copy:
 
@@ -879,20 +716,18 @@ Worth exploring to see what's available for your specific needs. When a relevant
 
 A typical build order:
 
-1. **Define features in the Feature Store** — entities, feature views, managed refresh
-2. **Generate a point-in-time-correct training set** — `generate_training_set` with `spine_timestamp_col`
-3. **Train in a notebook** — same Python, elastic compute, experiment tracking
-4. **Register the model** — one `log_model()` call
-5. **Call via SQL** — `MODEL!PREDICT_PROBA(...)` from anywhere
-6. **Automate scoring** — `CREATE TASK`, scheduled or triggered on data arrival
-7. **Monitor** — `CREATE MODEL MONITOR`, with the baseline set at creation
+1. **Train in a notebook** — same Python, elastic compute, experiment tracking
+2. **Register the model** — one `log_model()` call, with preprocessing packaged in
+3. **Call via SQL** — `MODEL!PREDICT_PROBA(...)` from anywhere
+4. **Automate scoring** — `CREATE TASK`, scheduled or triggered on data arrival
+5. **Monitor** — `CREATE MODEL MONITOR`, with the baseline set at creation
 
-The three decisions worth making before you build, because they're expensive to change later:
+Three decisions worth making before you build, because they're awkward to change later:
 
 | Decision | Why it matters |
 |---|---|
 | Set a **monitor baseline** at creation | Adding one later requires dropping and recreating the monitor |
-| Use `spine_timestamp_col` on training sets | Without it you leak future feature values into training and the model overstates its performance |
+| Package preprocessing **with** the model | Otherwise the cleaning logic at scoring time can drift from what ran at training time |
 | Pass a **Snowpark** DataFrame as `sample_input_data` | pandas works, but only Snowpark captures data lineage |
 
 ---
@@ -900,10 +735,10 @@ The three decisions worth making before you build, because they're expensive to 
 ## External References
 
 - [Snowflake ML overview](https://docs.snowflake.com/en/developer-guide/snowflake-ml/overview)
-- [Feature Store](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/overview) · [Advanced feature engineering](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/advanced-feature-engineering) · [Training and inference](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/modeling)
 - [Model Registry](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/overview) · [Pre/post-processing with models](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/custom-processing-with-models)
 - [ML Observability](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/model-observability) · [Model monitor functions](https://docs.snowflake.com/en/sql-reference/functions-model-monitors)
 - [Snowflake Notebooks](https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks)
-- [Git integration](https://docs.snowflake.com/en/developer-guide/git/git-overview)
+- [Writing stored procedures with Python](https://docs.snowflake.com/en/developer-guide/stored-procedure/python/procedure-python-overview) · [Tasks and task graphs with Python](https://docs.snowflake.com/en/developer-guide/snowflake-python-api/snowflake-python-managing-tasks)
 - [Triggered tasks](https://docs.snowflake.com/en/user-guide/tasks-triggered) · [Tasks overview](https://docs.snowflake.com/en/user-guide/tasks-intro)
+- [Git integration](https://docs.snowflake.com/en/developer-guide/git/git-overview)
 - [Snowflake Marketplace](https://app.snowflake.com/marketplace)
