@@ -7,10 +7,20 @@
 
 Most ML teams stitch together a database, a compute environment, an experiment tracker, a model store, a scheduler, and a monitoring vendor. This guide shows the same lifecycle running entirely inside Snowflake — same Python, same libraries, without the plumbing between them.
 
-> **Just want to train and register a model?** Jump to [Notebooks](#1-snowflake-notebooks--python-native-training) and [Model Registry](#4-model-registry--governed-versioned-callable). The rest fills in around it.
+> **Just want to train and register a model?** Jump to [Notebooks](#1-snowflake-notebooks--python-native-training) and [Model Registry](#3-model-registry--governed-versioned-callable). The rest fills in around it.
 
 **Audience:** Data scientists and ML engineers moving workloads onto Snowflake
-**Companion code:** [`credit_default_model.ipynb`](credit_default_model.ipynb) · [`demo_inference_and_tasks.sql`](demo_inference_and_tasks.sql) · [`streamlit_app.py`](streamlit_app.py)
+
+**Companion code:**
+
+| File | Purpose |
+|---|---|
+| [`credit_default_model.ipynb`](credit_default_model.ipynb) | Training, evaluation, experiment tracking, model registration |
+| [`demo_inference_and_tasks.sql`](demo_inference_and_tasks.sql) | SQL inference, approve/decline logic, scheduled scoring task |
+| [`streamlit_app.py`](streamlit_app.py) | Credit decisioning UI — single applicant and batch scoring |
+| [`optional_sample_data.sql`](optional_sample_data.sql) | Synthetic stand-in table, so the notebook runs before your own data is available |
+
+The notebook reads a table named `LOAN_APPLICATIONS` in `CREDIT_RISK.ML`. Point it at your own table and update the `feature_cols` list to match your columns — or run `optional_sample_data.sql` first to create a stand-in and try the flow end to end.
 
 > **Reference only — no support provided.** Validate against the linked documentation before production use. Snowflake ML features move quickly; a few noted below are in preview and may change.
 
