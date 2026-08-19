@@ -17,6 +17,7 @@ Most ML teams stitch together a database, a compute environment, an experiment t
 |---|---|
 | [`credit_default_model.ipynb`](credit_default_model.ipynb) | Training, evaluation, experiment tracking, model registration |
 | [`demo_inference_and_tasks.sql`](demo_inference_and_tasks.sql) | SQL inference, approve/decline logic, scheduled scoring task |
+| [`model_monitoring_setup.sql`](model_monitoring_setup.sql) | Monitor setup and every metric query, verified end to end |
 | [`streamlit_app.py`](streamlit_app.py) | Credit decisioning UI — single applicant and batch scoring |
 | [`optional_sample_data.sql`](optional_sample_data.sql) | Synthetic stand-in table, so the notebook runs before your own data is available |
 
@@ -473,20 +474,41 @@ Snowflake ML Observability provides native, off-the-shelf metrics. No Python imp
 ### Creating a monitor
 
 ```sql
-CREATE MODEL MONITOR credit_default_monitor
-  WITH
+-- The model name resolves against the current schema, so set context first.
+USE SCHEMA CREDIT_RISK.ML;
+
+CREATE OR REPLACE MODEL MONITOR CREDIT_DEFAULT_MONITOR WITH
     MODEL = CREDIT_DEFAULT_MODEL
-    VERSION = 'v1'
-    FUNCTION = 'predict_proba'
-    SOURCE = SCORED_APPLICATIONS
-    BASELINE = TRAINING_DATA          -- required for drift metrics
-    TIMESTAMP_COLUMN = SCORED_AT
-    PREDICTION_SCORE_COLUMNS = (PROB_DEFAULT)
-    ACTUAL_CLASS_COLUMNS = (ACTUAL_DEFAULT)
-    ID_COLUMNS = (APPLICANT_ID)
+    VERSION = 'V1'
+    FUNCTION = 'PREDICT_PROBA'
+    SOURCE = CREDIT_RISK.ML.SCORED_APPLICATIONS
+    BASELINE = CREDIT_RISK.ML.MONITOR_BASELINE   -- required for drift metrics
     WAREHOUSE = COMPUTE_WH
     REFRESH_INTERVAL = '1 day'
-    AGGREGATION_WINDOW = '1 day';
+    AGGREGATION_WINDOW = '1 day'
+    TIMESTAMP_COLUMN = SCORED_AT
+    ID_COLUMNS = ( 'APPLICANT_ID' )
+    PREDICTION_SCORE_COLUMNS = ( 'PROB_DEFAULT' )       -- the probability
+    PREDICTION_CLASS_COLUMNS = ( 'PREDICTED_DEFAULT' )  -- the 0/1 decision
+    ACTUAL_CLASS_COLUMNS = ( 'ACTUAL_DEFAULT' );
+```
+
+Three things that are easy to get wrong here, all verified against a live monitor:
+
+**Column parameters take quoted strings, not identifiers.** `( 'PROB_DEFAULT' )`, not `( PROB_DEFAULT )`. They're array constants. `TIMESTAMP_COLUMN`, `MODEL`, `SOURCE`, and `BASELINE` are the opposite — bare identifiers, unquoted.
+
+**The model name resolves against the current schema.** `MODEL = CREDIT_DEFAULT_MODEL` fails with *"MODEL does not exist or not authorized"* if your session is pointed elsewhere, even when the monitor name is fully qualified. Run `USE SCHEMA` first. The monitor must live in the same schema as the model version.
+
+**You need both a score and a class column to get all the metrics.** This one is easy to miss — see below.
+
+Confirm it came up clean before moving on:
+
+```sql
+DESCRIBE MODEL MONITOR CREDIT_DEFAULT_MONITOR;
+-- monitor_state should be ACTIVE
+-- aggregation_status should show ACTIVE for SOURCE_AGGREGATED and ACCURACY_AGGREGATED
+-- aggregation_last_error should be empty
+-- the columns JSON lists which features it picked up as numerical_columns
 ```
 
 ### Drift metrics
@@ -500,7 +522,7 @@ CREATE MODEL MONITOR credit_default_monitor
 | `WASSERSTEIN` | Earth mover's distance |
 | `DIFFERENCE_OF_MEANS` | Simple mean shift |
 
-Available on any feature column, the prediction column, or the actual column.
+Available on any feature column, the prediction column, or the actual column. Feature columns are picked up automatically from the source table — you don't declare them.
 
 ### Performance metrics
 
@@ -512,7 +534,29 @@ Available on any feature column, the prediction column, or the actual column.
 | Multi-class | `CLASSIFICATION_ACCURACY`, `MACRO_AVERAGE_PRECISION`, `MACRO_AVERAGE_RECALL`, `MICRO_AVERAGE_PRECISION`, `MICRO_AVERAGE_RECALL` |
 | Regression | `RMSE`, `MAE`, `MAPE`, `MSE` |
 
-`ROC_AUC` needs the prediction score and actual class columns; the class-based metrics need prediction class and actual class.
+**Score vs. class — this determines which metrics you actually get.** For binary classification the two kinds of prediction column serve different metrics:
+
+| Metric | Needs |
+|---|---|
+| `ROC_AUC` | prediction **score** + actual class |
+| `PRECISION`, `RECALL`, `F1_SCORE`, `CLASSIFICATION_ACCURACY` | prediction **class** + actual class |
+
+If you only declare `PREDICTION_SCORE_COLUMNS`, the four class-based metrics return **NULL with no error** — the query succeeds and the values are just empty. Declare both columns to get all five.
+
+In practice this is free: your scoring table almost certainly has both already. The probability is the model output, and the class is your approve/decline decision at whatever threshold your credit policy uses.
+
+```sql
+-- Both columns come out of the same scoring step
+CREATE OR REPLACE TABLE SCORED_APPLICATIONS AS
+SELECT
+    APPLICANT_ID,
+    <feature columns>,
+    <model>!PREDICT_PROBA(...):output_feature_1::FLOAT AS PROB_DEFAULT,
+    CASE WHEN PROB_DEFAULT > 0.35 THEN 1 ELSE 0 END::NUMBER AS PREDICTED_DEFAULT,
+    ACTUAL_DEFAULT,
+    SCORED_AT
+FROM ...;
+```
 
 ### Statistical metrics
 
@@ -521,27 +565,34 @@ Available on any feature column, the prediction column, or the actual column.
 ### Querying metrics
 
 ```sql
--- ROC AUC, daily, over the last 30 days
-SELECT * FROM TABLE(MODEL_MONITOR_PERFORMANCE_METRIC(
+-- ROC AUC by day. Returns EVENT_TIMESTAMP, METRIC_VALUE, COUNT_USED,
+-- COUNT_UNUSED, METRIC_NAME, SEGMENT_COLUMN, SEGMENT_VALUE.
+SELECT EVENT_TIMESTAMP::DATE AS DAY, ROUND(METRIC_VALUE, 4) AS ROC_AUC, COUNT_USED
+FROM TABLE(MODEL_MONITOR_PERFORMANCE_METRIC(
   'CREDIT_DEFAULT_MONITOR', 'ROC_AUC', '1 DAY',
   DATEADD('DAY', -30, CURRENT_DATE()), CURRENT_DATE()
-));
+))
+ORDER BY DAY DESC;
 
--- PSI on a feature column (CSI equivalent)
-SELECT * FROM TABLE(MODEL_MONITOR_DRIFT_METRIC(
+-- PSI on a feature column (the CSI use case)
+SELECT EVENT_TIMESTAMP::DATE AS DAY, COLUMN_NAME, ROUND(METRIC_VALUE, 5) AS PSI
+FROM TABLE(MODEL_MONITOR_DRIFT_METRIC(
   'CREDIT_DEFAULT_MONITOR', 'POPULATION_STABILITY_INDEX', 'FICO_SCORE', '1 DAY',
   DATEADD('DAY', -30, CURRENT_DATE()), CURRENT_DATE()
-));
+))
+ORDER BY DAY DESC;
 ```
 
 Since metrics come back as SQL table functions, you can build custom dashboards in Streamlit or any BI tool, and set alerts on thresholds.
+
+One note on interpreting PSI: it compares each window against the baseline snapshot, so a small daily window measured against a large baseline will show some apparent drift from sample size alone. Set your alert thresholds from a period you consider normal rather than from theory.
 
 ### Segmentation
 
 Monitor performance across subsets of the portfolio — by product, channel, or risk tier:
 
 ```sql
-CREATE MODEL MONITOR ... SEGMENT_COLUMNS = (PRODUCT_TYPE, ACQUISITION_CHANNEL);
+CREATE MODEL MONITOR ... SEGMENT_COLUMNS = ( 'PRODUCT_TYPE', 'ACQUISITION_CHANNEL' );
 ```
 
 ```sql
