@@ -369,7 +369,7 @@ Segment by product, channel, or risk tier with `SEGMENT_COLUMNS = ( 'PRODUCT_TYP
 
 ### Constraints worth knowing up front
 
-- **Baseline is set at creation.** Adding one later requires dropping and recreating the monitor.
+- **Baseline can be added later**, contrary to some docs: `ALTER MODEL MONITOR <name> SET BASELINE = <table>` works and drift starts computing. Note the baseline table is **unquoted** here, unlike the `_COLUMNS` parameters. Without a baseline, drift queries error with *"Baseline is not set."*
 - Monitor must live in the same schema as the model version. One monitor per version.
 - `TIMESTAMP_NTZ` for timestamps; `NUMBER` for prediction and actual columns.
 - No nulls, NaN, Inf, or scores outside 0–1 in the source — these suspend the monitor.
@@ -452,13 +452,13 @@ Snowflake Marketplace hosts third-party data products — credit bureau attribut
 2. Register the model, preprocessing packaged in
 3. Call it from SQL
 4. Automate scoring — scheduled, or triggered on data arrival
-5. Add a monitor, baseline set at creation
+5. Add a monitor, with a baseline so drift works
 
 Three decisions that are awkward to reverse:
 
 | Decision | Why |
 |---|---|
-| Set the monitor **baseline** at creation | Adding one later means recreating the monitor |
+| Include a **baseline** when you set up the monitor | Drift needs it. Can be added later via `ALTER`, but you get no drift history for the gap |
 | Declare **both** prediction score and class columns | Four performance metrics silently return NULL otherwise |
 | Package preprocessing **with** the model | Otherwise scoring-time cleaning can drift from training-time |
 

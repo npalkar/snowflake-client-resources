@@ -76,8 +76,16 @@ FROM CREDIT_RISK.ML.SCORED_APPLICATIONS;
 -- STEP 2: Baseline snapshot
 --
 -- Drift is measured against this. Without a baseline the monitor
--- is created but drift metrics cannot be computed -- and adding one
--- later requires dropping and recreating the monitor.
+-- still gets created, but drift queries fail with
+-- "Baseline is not set for model monitor '<name>'."
+--
+-- A baseline CAN be added afterward, despite what some docs say:
+--
+--   ALTER MODEL MONITOR <name> SET BASELINE = CREDIT_RISK.ML.MONITOR_BASELINE;
+--
+-- Note the table is UNQUOTED there, unlike the _COLUMNS parameters.
+-- Verified working -- drift began computing on the next refresh. You
+-- just have no drift history for the period before it was attached.
 --
 -- In production, use a snapshot of the data the model was trained
 -- on, or a period you consider representative of normal.
